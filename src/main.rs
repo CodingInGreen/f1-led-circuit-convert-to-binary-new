@@ -1,15 +1,15 @@
-use csv::ReaderBuilder;
-use postcard;
-use serde::{Deserialize, Serialize};
-use serde_json;
-use std::error::Error;
+use serde::{Serialize, Deserialize, Serializer, Deserializer};
+use serde::ser::SerializeSeq;
+use serde::de::{self, Visitor, SeqAccess};
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
+use std::fmt;
+use bincode;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-struct DriverData {
-    driver_number: u8,
-    led_num: u8,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DriverData {
+    pub driver_number: u8,
+    pub led_num: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,73 +17,98 @@ pub struct UpdateFrame {
     pub drivers: [Option<DriverData>; 20],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct VisualizationData {
     pub update_rate_ms: u32,
-    pub frames: Vec<UpdateFrame>,
+    pub frames: [UpdateFrame; 8879],
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    // Open the CSV file
-    let file_path = "zandvoort_grouped_1hz.csv";
-    let mut rdr = ReaderBuilder::new().has_headers(true).from_path(file_path)?;
+// Custom serialization for VisualizationData
+impl Serialize for VisualizationData {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(8879))?;
+        for frame in &self.frames {
+            seq.serialize_element(frame)?;
+        }
+        seq.end()
+    }
+}
 
-    // Extract the headers for driver numbers
-    let headers = rdr.headers()?.clone();
-    let driver_numbers: Vec<u8> = headers
-        .iter()
-        .skip(1) // Skip the first column (assuming it's a timestamp or irrelevant)
-        .map(|s| s.parse::<u8>().unwrap_or(0))
-        .collect();
+// Custom deserialization for VisualizationData
+impl<'de> Deserialize<'de> for VisualizationData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct FrameVisitor;
 
-    // Initialize the frames
-    let mut frames: Vec<UpdateFrame> = Vec::new();
+        impl<'de> Visitor<'de> for FrameVisitor {
+            type Value = [UpdateFrame; 8879];
 
-    // Iterate through CSV records
-    for result in rdr.records() {
-        let record = result?;
-        let mut drivers: [Option<DriverData>; 20] = Default::default();
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an array of 8879 UpdateFrame")
+            }
 
-        for (i, led_num) in record.iter().enumerate().skip(1) {
-            if let Ok(led_num) = led_num.parse::<u8>() {
-                if let Some(&driver_number) = driver_numbers.get(i - 1) {
-                    if driver_number > 0 && driver_number <= 20 {
-                        drivers[(driver_number - 1) as usize] = Some(DriverData {
-                            driver_number,
-                            led_num,
-                        });
-                    }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut frames: [UpdateFrame; 8879] = unsafe { std::mem::zeroed() };
+                for i in 0..8879 {
+                    frames[i] = seq.next_element()?
+                        .ok_or_else(|| de::Error::invalid_length(i, &self))?;
                 }
+                Ok(frames)
             }
         }
 
-        frames.push(UpdateFrame { drivers });
+        let frames = deserializer.deserialize_seq(FrameVisitor)?;
+        Ok(VisualizationData {
+            update_rate_ms: 250,
+            frames,
+        })
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    // Read the CSV file
+    let file_path = "zandvoort_grouped_1hz.csv";
+    let mut rdr = csv::Reader::from_path(file_path)?;
+
+    let headers = rdr.headers()?.clone();
+    let mut frames: [UpdateFrame; 8879] = unsafe { std::mem::zeroed() };
+
+    for (i, result) in rdr.records().enumerate() {
+        let record = result.unwrap();
+        let mut drivers: [Option<DriverData>; 20] = Default::default();
+
+        for (j, field) in record.iter().skip(1).enumerate() {
+            let driver_number: u8 = headers[j + 1].parse().unwrap();
+            let led_num: u8 = field.parse().unwrap();
+            drivers[j] = Some(DriverData { driver_number, led_num });
+        }
+
+        frames[i] = UpdateFrame { drivers };
     }
 
-    // Check if the number of frames matches the expected number
-    if frames.len() != 8879 {
-        return Err(Box::from(format!(
-            "The number of frames ({}) does not match the expected 8879.",
-            frames.len()
-        )));
-    }
-
-    // Create VisualizationData
-    let data = VisualizationData {
-        update_rate_ms: 1000,
+    let visualization_data = VisualizationData {
+        update_rate_ms: 250,
         frames,
     };
 
-    // Output JSON file
-    let json_file_path = "output.json";
-    let json_file = File::create(json_file_path)?;
-    serde_json::to_writer_pretty(json_file, &data)?;
+    // Output JSON format
+    let json_file = File::create("output.json")?;
+    let writer = BufWriter::new(json_file);
+    serde_json::to_writer(writer, &visualization_data)?;
 
-    // Output Binary file
-    let bin_file_path = "output.bin";
-    let mut bin_file = File::create(bin_file_path)?;
-    let serialized_data = postcard::to_allocvec(&data)?;
-    bin_file.write_all(&serialized_data)?;
+    // Output Binary format
+    let bin_file = File::create("output.bin")?;
+    let writer = BufWriter::new(bin_file);
+    bincode::serialize_into(writer, &visualization_data)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
 
     Ok(())
 }
