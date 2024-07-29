@@ -28,6 +28,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let file_path = "zandvoort_grouped_1hz.csv";
     let mut rdr = ReaderBuilder::new().has_headers(true).from_path(file_path)?;
 
+    // Extract the headers for driver numbers
+    let headers = rdr.headers()?.clone();
+    let driver_numbers: Vec<u8> = headers
+        .iter()
+        .skip(1) // Skip the first column (assuming it's a timestamp or irrelevant)
+        .map(|s| s.parse::<u8>().unwrap_or(0))
+        .collect();
+
     // Initialize the frames
     let mut frames: Vec<UpdateFrame> = Vec::new();
 
@@ -36,13 +44,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let record = result?;
         let mut drivers: [Option<DriverData>; 20] = Default::default();
 
-        for (i, led_num) in record.iter().skip(1).enumerate() {
-            if i < 20 {
-                if let Ok(led_num) = led_num.parse::<u8>() {
-                    drivers[i] = Some(DriverData {
-                        driver_number: (i + 1) as u8,
-                        led_num,
-                    });
+        for (i, led_num) in record.iter().enumerate().skip(1) {
+            if let Ok(led_num) = led_num.parse::<u8>() {
+                if let Some(&driver_number) = driver_numbers.get(i - 1) {
+                    if driver_number > 0 && driver_number <= 20 {
+                        drivers[(driver_number - 1) as usize] = Some(DriverData {
+                            driver_number,
+                            led_num,
+                        });
+                    }
                 }
             }
         }
@@ -67,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Output JSON file
     let json_file_path = "output.json";
     let json_file = File::create(json_file_path)?;
-    serde_json::to_writer(json_file, &data)?;
+    serde_json::to_writer_pretty(json_file, &data)?;
 
     // Output Binary file
     let bin_file_path = "output.bin";
