@@ -7,7 +7,7 @@ pub struct DriverData {
 
 #[derive(Debug)]
 pub struct UpdateFrame {
-    pub drivers: [Option<DriverData>; 20],
+    pub frame: [Option<DriverData>; 20],
 }
 
 #[derive(Debug)]
