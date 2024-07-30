@@ -19,7 +19,7 @@ pub struct VisualizationData {
 
 
 pub const VISUALIZATION_DATA: VisualizationData = VisualizationData {
-    update_rate_ms: 25o0,
+    update_rate_ms: 250,
     frames: [
 UpdateFrame {
     drivers: [

@@ -14,7 +14,7 @@ pub struct DriverData {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateFrame {
-    pub drivers: [Option<DriverData>; 20],
+    pub frame: [Option<DriverData>; 20],
 }
 
 #[derive(Debug)]
@@ -83,15 +83,15 @@ fn main() -> std::io::Result<()> {
 
     for (i, result) in rdr.records().enumerate() {
         let record = result.unwrap();
-        let mut drivers: [Option<DriverData>; 20] = Default::default();
+        let mut frame: [Option<DriverData>; 20] = Default::default();
 
         for (j, field) in record.iter().skip(1).enumerate() {
             let driver_number: u8 = headers[j + 1].parse().unwrap();
             let led_num: u8 = field.parse().unwrap();
-            drivers[j] = Some(DriverData { driver_number, led_num });
+            frame[j] = Some(DriverData { driver_number, led_num });
         }
 
-        frames[i] = UpdateFrame { drivers };
+        frames[i] = UpdateFrame { frame };
     }
 
     let visualization_data = VisualizationData {
